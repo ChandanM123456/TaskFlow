@@ -1,3 +1,13 @@
-django
+Django
 djangorestframework
+django-cors-headers
+django-filter
+python-decouple
 psycopg2-binary
+pandas
+gunicorn
+whitenoise
+django-extensions
+django-debug-toolbar
+dj-database-url
+djangorestframework-simplejwt

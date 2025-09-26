@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from .models import Task, UserProfile
+from .models import Task, UserProfile, Meeting
 
 User = get_user_model()
 
@@ -14,7 +14,6 @@ class TaskSerializer(serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = "__all__"
-
 
 # -------------------------------
 # User Serializer
@@ -29,7 +28,13 @@ class UserSerializer(serializers.ModelSerializer):
     def get_tasks_count(self, obj):
         return Task.objects.filter(assigned_to=obj).count()
 
-
+# -------------------------------
+# Meeting Serializer
+# -------------------------------
+class MeetingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Meeting
+        fields = '__all__'
 # -------------------------------
 # Custom JWT Serializer
 # -------------------------------
@@ -37,12 +42,11 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
 
-        # Safely fetch role from UserProfile
         try:
             profile = UserProfile.objects.get(user=self.user)
             role = profile.role
         except UserProfile.DoesNotExist:
-            role = "EMPLOYEE"  # default fallback
+            role = "EMPLOYEE"
 
         data.update({
             "username": self.user.username,

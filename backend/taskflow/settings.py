@@ -81,9 +81,6 @@ DATABASES = {
     )
 }
 
-# Remove custom user model reference
-# AUTH_USER_MODEL = 'accounts.User'  ❌ Not needed
-
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
@@ -110,12 +107,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST Framework
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': (
+    'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
-    ),
-    'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.IsAuthenticated',
-    ),
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.AllowAny',  # ✅ Use IsAuthenticated only if needed globally
+    ],
 }
 
 # JWT Settings
@@ -132,8 +129,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",  # Vite frontend
 ]
 
-# Optional: Allow all origins for dev
-# CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = True  # ✅ Enable for dev
 
-# Optional: CSRF exemption for API-only
-# CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]
+# CSRF
+CSRF_TRUSTED_ORIGINS = ["http://localhost:5173"]  # ✅ Needed if CSRF is active
