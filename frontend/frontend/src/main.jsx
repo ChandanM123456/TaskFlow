@@ -5,6 +5,7 @@ import "./style.css";
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 import * as XLSX from "xlsx";
 import Editor from "@monaco-editor/react";
+import { syncLocalToRemote } from "./api/axios";
 
 import {
   Chart,
@@ -19,20 +20,6 @@ import {
   Filler,
 } from "chart.js";
 import { Pie, Bar, Line } from "react-chartjs-2";
-
-/**
- * main.jsx — Scrum.io
- * - Fix: Hooks order issue by avoiding hooks after conditional returns.
- * - Fix: Telemetry 404 silenced with runtime disable; hides Flush button if endpoint unavailable.
- * - Meetings: title+link required; employees see compact list; SMs can still add agenda/times.
- * - About and Contact: separate tabs, visible to both roles.
- * - Analytics: compact dashboard for both roles with KPIs + charts; added throughput + time charts, proactive suggestions.
- * - Assistant tab: context-aware chatbot as a dedicated sidebar tab for Employees (no floating dock).
- * - Employees tab: hidden for Employees; visible for Scrum Masters only.
- * - Notifications: auto-dismiss with optional manual close.
- * - Behavioral capture: logs for task moves, edits, approvals, code actions, navigation, searches, time-on-task, data upload/query.
- * - All original logic preserved: PASS→Done, Request Changes→TODO, manual save editor, code badge.
- */
 
 Chart.register(
   ArcElement,
@@ -53,63 +40,92 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Add after imports (around line 50)
+function PingModal({ open, title, fields, onSubmit, onCancel }) {
+  const [values, setValues] = useState(() =>
+    fields.reduce((acc, f) => ({ ...acc, [f.name]: f.default || "" }), {})
+  );
+
+  useEffect(() => {
+    setValues(fields.reduce((acc, f) => ({ ...acc, [f.name]: f.default || "" }), {}));
+  }, [fields, open]);
+
+  if (!open) return null;
+  return (
+    <div className="ping-modal-overlay">
+      <div className="ping-modal-card">
+        <div className="ping-modal-header">
+          <h2>{title}</h2>
+          <button className="ping-modal-close" onClick={onCancel} title="Close">&times;</button>
+        </div>
+        <div className="ping-modal-fields">
+          {fields.map((f) => (
+            <div key={f.name} className="ping-modal-field">
+              <label className="ping-modal-label">{f.label}</label>
+              {f.type === "textarea" ? (
+                <textarea
+                  className="ping-modal-input"
+                  placeholder={f.label}
+                  value={values[f.name]}
+                  onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
+                  rows={4}
+                />
+              ) : f.type === "select" ? (
+                <select
+                  className="ping-modal-input"
+                  value={values[f.name]}
+                  onChange={e => setValues({ ...values, [f.name]: e.target.value })}
+                >
+                  {f.options.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="ping-modal-input"
+                  type={f.type}
+                  placeholder={f.label}
+                  value={values[f.name]}
+                  onChange={(e) => setValues({ ...values, [f.name]: e.target.value })}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="ping-modal-actions">
+          <button className="ping-modal-btn ping-modal-cancel" onClick={onCancel}>Cancel</button>
+          <button className="ping-modal-btn ping-modal-submit" onClick={() => onSubmit(values)}>Submit</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 /* ===========================
-   Telemetry (client buffer) with runtime disable
+   Telemetry (in-memory buffer)
    =========================== */
 const Telemetry = (() => {
-  const KEY = "telemetry_buffer_v2";
-  const SESSION_KEY = "telemetry_session_id";
   const BUF_MAX = 2000;
   const FLUSH_INTERVAL = 5000;
-
   let enabled = true;
   let intervalId = null;
+  let buffer = [];
 
-  const getSession = () => {
-    let s = sessionStorage.getItem(SESSION_KEY);
-    if (!s) {
-      s = Math.random().toString(36).slice(2);
-      sessionStorage.setItem(SESSION_KEY, s);
-    }
-    return s;
-  };
-  const load = () => {
-    try {
-      return JSON.parse(localStorage.getItem(KEY) || "[]");
-    } catch {
-      return [];
-    }
-  };
-  const save = (arr) => localStorage.setItem(KEY, JSON.stringify(arr.slice(-BUF_MAX)));
-  let buffer = load();
+  const getSession = () => Math.random().toString(36).slice(2);
 
   const enqueue = (event) => {
     buffer.push(event);
-    save(buffer);
+    if (buffer.length > BUF_MAX) buffer = buffer.slice(-BUF_MAX);
   };
 
   const flush = async () => {
-    if (!enabled) return;
-    if (!buffer.length) return;
+    if (!enabled || !buffer.length) return;
     const batch = buffer.slice(0, 200);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/events/batch/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(localStorage.getItem("access_token")
-            ? { Authorization: `Bearer ${localStorage.getItem("access_token")}` }
-            : {}),
-        },
-        body: JSON.stringify({ session: getSession(), events: batch }),
+      await api.post("events/batch/", {
+        session: getSession(),
+        events: batch,
       });
-      if (!res.ok) {
-        enabled = false;
-        if (intervalId) clearInterval(intervalId);
-        return;
-      }
       buffer = buffer.slice(batch.length);
-      save(buffer);
     } catch {
       enabled = false;
       if (intervalId) clearInterval(intervalId);
@@ -119,29 +135,18 @@ const Telemetry = (() => {
   intervalId = setInterval(flush, FLUSH_INTERVAL);
 
   const log = (type, data = {}) => {
-    const username = localStorage.getItem("username");
     const evt = {
       id: Math.random().toString(36).slice(2),
       at: new Date().toISOString(),
       type,
       session: getSession(),
-      user: username || null,
+      user: null,
       data,
     };
     enqueue(evt);
   };
 
-  const getBuffered = () => {
-    try {
-      return JSON.parse(localStorage.getItem(KEY) || "[]");
-    } catch {
-      return [];
-    }
-  };
-
-  const isEnabled = () => enabled;
-
-  return { log, flush, getBuffered, isEnabled };
+  return { log, flush, getBuffered: () => buffer, isEnabled: () => enabled };
 })();
 
 /* ===========================
@@ -173,14 +178,50 @@ const useTimeOnTask = (taskId, enabled) => {
       window.removeEventListener("blur", onBlur);
       document.removeEventListener("visibilitychange", onVis);
     };
-    // eslint-disable-next-line
   }, [taskId, enabled]);
 
   return { start, stop };
 };
 
 /* ===========================
-   Local code "DB" (localStorage)
+   RemoteRepo (PostgreSQL-backed)
+   =========================== */
+const RemoteRepo = {
+  async save(taskId, payload) {
+    const data = {
+      file_structure: payload.file_structure || [],
+      code_content: payload.code_content || "",
+      language: payload.language || "javascript",
+      saved_at: new Date().toISOString(),
+    };
+    await api.post(`tasks/${taskId}/code/`, data);
+    return data;
+  },
+  async load(taskId) {
+    try {
+      const res = await api.get(`tasks/${taskId}/code/`);
+      const data = res.data;
+      if (!Array.isArray(data.file_structure)) data.file_structure = [];
+      data.code_content = data.code_content || "";
+      data.language = data.language || "javascript";
+      return data;
+    } catch {
+      return null;
+    }
+  },
+  async remove(taskId) {
+    await api.post(`tasks/${taskId}/code/`, {
+      file_structure: [],
+      code_content: "",
+      language: "javascript",
+      saved_at: new Date().toISOString(),
+    });
+  },
+};
+syncLocalToRemote(); // Run once on load or periodically
+
+/* ===========================
+   code "DB" (Storage)
    =========================== */
 const LocalRepo = {
   key(taskId) {
@@ -646,6 +687,22 @@ const EmployeeCard = ({
   );
 };
 
+// Add at line ~700
+const ProductivityTip = ({ analyticsData }) => {
+  if (!analyticsData?.kpis) return null;
+  const { kpis } = analyticsData;
+  let tip = "Stay focused and take regular breaks!";
+  if (kpis.contextSwitchesToday > 20) tip = "Try batching similar tasks to reduce context switching.";
+  else if ((kpis.optimalHours?.[0]?.ms || 0) > 3600000) tip = "Schedule deep work during your peak hours!";
+  else if (kpis.completed < 3) tip = "Set a small goal for today and celebrate when you finish!";
+  return (
+    <div className="tip-card">
+      <h4>Tip of the Day 🌟</h4>
+      <p>{tip}</p>
+    </div>
+  );
+};
+
 /* ===========================
    Meetings Types & UI helpers
    =========================== */
@@ -662,7 +719,6 @@ const defaultMeeting = () => ({
   title: "",
   agenda: "",
   starts_at: "",
-  ends_at: "",
   link: "",
 });
 
@@ -933,6 +989,10 @@ function App() {
     }
   }, []);
 
+  // Add after other useState hooks (around line 780)
+const [pingModalOpen, setPingModalOpen] = useState(false);
+const [pingModalConfig, setPingModalConfig] = useState({});
+
   // ---------- Analytics builder (enhanced) ----------
   const buildAnalytics = useCallback((tasksList, events) => {
     const completed = tasksList.filter((t) => t.status === "DONE" || t.status === "PASS").length;
@@ -1190,40 +1250,45 @@ function App() {
     }
   };
 
-  const handleEditTask = async (task) => {
-    const newTitle = window.prompt("Edit Task Title:", task.title);
-    if (newTitle === null) return;
-    const newDesc = window.prompt("Edit Task Description:", task.description ?? "");
-    if (newDesc === null) return;
-
-    let assigned_to_id = task.assigned_to;
-    if (role === "SCRUM_MASTER") {
-      const employeeUsernames = employees.map((e) => `${e.id}: ${e.username}`).join("\n");
-      const pick = window.prompt(
-        `Update assigned employee (enter ID):\n${employeeUsernames}`,
-        task.assigned_to
-      );
-      if (pick !== null && pick !== "") assigned_to_id = Number(pick);
-      else if (pick === "") assigned_to_id = null;
-      else return;
+const handleEditTask = (task) => {
+  setPingModalConfig({
+    title: "Edit Task",
+    fields: [
+      { name: "title", label: "Task Title", type: "text", default: task.title },
+      { name: "description", label: "Task Description", type: "textarea", default: task.description },
+      ...(role === "SCRUM_MASTER"
+        ? [{
+            name: "assigned_to",
+            label: "Assigned Employee",
+            type: "select",
+            options: employees.map(emp => ({
+              value: emp.id,
+              label: `${emp.username} (ID: ${emp.id})`
+            })),
+            default: task.assigned_to
+          }]
+        : [])
+    ],
+    onSubmit: async (values) => {
+      try {
+        const payload = {
+          title: values.title,
+          description: values.description,
+          assigned_to: role === "SCRUM_MASTER" ? Number(values.assigned_to) : task.assigned_to,
+          status: task.status,
+        };
+        const res = await api.put(`tasks/${task.id}/`, payload);
+        upsertTaskInState(res.data);
+        setNotifications((prev) => [...prev, `Task "${res.data.title}" updated successfully! ✅`]);
+        Telemetry.log("task_edit", { taskId: task.id, changes: payload });
+      } catch {
+        setError("Failed to update task");
+      }
+      setPingModalOpen(false);
     }
-
-    try {
-      const payload = {
-        title: (newTitle || "").trim(),
-        description: (newDesc || "").trim(),
-        assigned_to: assigned_to_id,
-        status: task.status,
-      };
-      const res = await api.put(`tasks/${task.id}/`, payload);
-      upsertTaskInState(res.data);
-      setNotifications((prev) => [...prev, `Task "${res.data.title}" updated successfully! ✅`]);
-      Telemetry.log("task_edit", { taskId: task.id, changes: payload });
-    } catch {
-      setError("Failed to update task");
-    }
-  };
-
+  });
+  setPingModalOpen(true);
+};
   const handleDeleteTask = async (taskId) => {
     if (!window.confirm("Delete this task?")) return;
     try {
@@ -1235,6 +1300,8 @@ function App() {
       setError("Failed to delete task");
     }
   };
+
+  
 
   // ---------- Drag & Drop ----------
   const handleDragEnd = async (result) => {
@@ -1274,37 +1341,57 @@ function App() {
   };
 
   // ---------- Approve / Request Changes ----------
-  const handleScrumApprove = async (task) => {
-    try {
-      const note = window.prompt("Optional approval note:", "Approved");
-      const res = await api.patch(`tasks/${task.id}/`, {
-        status: "PASS",
-        feedback: note || "Approved",
-      });
-      const updated = res.data;
-      upsertTaskInState(updated);
-      setNotifications((prev) => [...prev, `Task "${updated.title}" approved.`]);
-      Telemetry.log("task_review_approve", { taskId: task.id });
-    } catch {
-      setError("Failed to approve task");
+const handleScrumApprove = (task) => {
+  setPingModalConfig({
+    title: "Approve Task",
+    fields: [
+      { name: "feedback", label: "Approval Note", type: "textarea", default: "Approved" }
+    ],
+    onSubmit: async (values) => {
+      try {
+        const res = await api.patch(`tasks/${task.id}/`, {
+          status: "PASS",
+          feedback: values.feedback || "Approved",
+        });
+        upsertTaskInState(res.data);
+        setNotifications((prev) => [...prev, `Task "${res.data.title}" approved.`]);
+        Telemetry.log("task_review_approve", { taskId: task.id });
+      } catch {
+        setError("Failed to approve task");
+      }
+      setPingModalOpen(false);
     }
-  };
+  });
+  setPingModalOpen(true);
+};
 
-  const handleScrumRequestChanges = async (task) => {
-    try {
-      const reason = window.prompt("Reason for changes (required):", "Please fix issues and resubmit.");
-      if (!reason) return;
-      const res = await api.patch(`tasks/${task.id}/`, {
-        status: "TODO",
-        feedback: `[Request Changes] ${reason}`,
-      });
-      upsertTaskInState(res.data);
-      setNotifications((prev) => [...prev, `Task "${res.data.title}" moved to TODO with feedback.`]);
-      Telemetry.log("task_review_request_changes", { taskId: task.id });
-    } catch {
-      setError("Failed to request changes");
+const handleScrumRequestChanges = (task) => {
+  setPingModalConfig({
+    title: "Request Changes",
+    fields: [
+      { name: "feedback", label: "Reason for changes", type: "textarea", default: "" }
+    ],
+    onSubmit: async (values) => {
+      if (!values.feedback) {
+        setError("Reason is required");
+        return;
+      }
+      try {
+        const res = await api.patch(`tasks/${task.id}/`, {
+          status: "TODO",
+          feedback: `[Request Changes] ${values.feedback}`,
+        });
+        upsertTaskInState(res.data);
+        setNotifications((prev) => [...prev, `Task "${res.data.title}" moved to TODO with feedback.`]);
+        Telemetry.log("task_review_request_changes", { taskId: task.id });
+      } catch {
+        setError("Failed to request changes");
+      }
+      setPingModalOpen(false);
     }
-  };
+  });
+  setPingModalOpen(true);
+};
 
   // ---------- Code execution ----------
   const handleCodeRun = async (code, language, setOutput, taskId = null, outputMountRef = null) => {
@@ -1727,12 +1814,9 @@ function App() {
               </button>
               {task.status === "REVIEW" && (
                 <>
-                  <button className="save-code-btn" onClick={() => handleScrumApprove(task)}>
-                    ✅ Approve
-                  </button>
-                  <button className="delete-btn" onClick={() => handleScrumRequestChanges(task)}>
-                    📝 Request Changes
-                  </button>
+    <button className="save-code-btn" onClick={() => handleScrumApprove(task)}>✅ Approve</button>
+    <button className="delete-btn" onClick={() => handleScrumRequestChanges(task)}>📝 Request Changes</button>
+
                 </>
               )}
             </>
@@ -1934,6 +2018,9 @@ function App() {
     );
   };
 
+
+// Add at line ~1400, at the top of AnalyticsPanel's return
+<ProductivityTip analyticsData={analyticsData} />
   const AnalyticsPanel = () => {
     if (!analyticsData) return <Loader />;
 
@@ -2059,6 +2146,50 @@ function App() {
             <Line data={burnDownChartData} />
           </div>
         </div>
+<div className="charts-grid">
+  <div className="chart-container">
+    <h4>Tasks Completed</h4>
+    <Pie data={pieData} />
+  </div>
+  <div className="chart-container">
+    <h4>Productivity Trend</h4>
+    <Line data={throughputChart} />
+  </div>
+  <div className="chart-container">
+    <h4>Time on Tasks</h4>
+    <Bar data={timeByUserChart} />
+  </div>
+</div>
+// Add after <KPICards kpis={kpis} /> in AnalyticsPanel, line ~1405
+<div className="gamified-progress">
+  <h4>Progress Level</h4>
+  <div className="progress-bar-outer">
+    <div
+      className="progress-bar-inner"
+      style={{ width: `${Math.min(100, Math.round((kpis.completed/(kpis.completed+kpis.pending))*100))}%` }}
+    />
+  </div>
+  <div className="progress-badges">
+    {kpis.completed >= 10 && <span className="badge">🏅 Bronze</span>}
+    {kpis.completed >= 25 && <span className="badge">🥈 Silver</span>}
+    {kpis.completed >= 50 && <span className="badge">🥇 Gold</span>}
+  </div>
+</div>
+
+// Add after charts in AnalyticsPanel, line ~1500
+<div className="leaderboard">
+  <h4>Leaderboard</h4>
+  <ol>
+    {analyticsData.employeePerformance
+      .sort((a, b) => b.completed - a.completed)
+      .slice(0, 5)
+      .map((emp, idx) => (
+        <li key={emp.username}>
+          <strong>{idx + 1}. {emp.username}</strong> — {emp.completed} tasks, {emp.timeHrs} hrs
+        </li>
+      ))}
+  </ol>
+</div>
 
         <div className="charts">
           <div className="chart-container">
@@ -2084,6 +2215,48 @@ function App() {
       </div>
     );
   };
+
+ // Add after charts in AnalyticsPanel, line ~1520
+<div className="chart-container">
+  <h4>Productivity Heatmap</h4>
+  <table className="heatmap-table">
+    <thead>
+      <tr>
+        <th>Hour</th>
+        {Array.from({ length: 7 }).map((_, d) => (
+          <th key={d}>{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d]}</th>
+        ))}
+      </tr>
+    </thead>
+    <tbody>
+      {Array.from({ length: 24 }).map((_, h) => (
+        <tr key={h}>
+          <td>{h}:00</td>
+          {Array.from({ length: 7 }).map((_, d) => {
+            const ms = (Telemetry.getBuffered() || [])
+              .filter(e => e.type === "time_spent")
+              .filter(e => new Date(e.at).getHours() === h && new Date(e.at).getDay() === d)
+              .reduce((acc, e) => acc + (e.data?.ms || 0), 0);
+            const intensity = Math.min(1, ms / 3600000);
+            return (
+              <td
+                key={d}
+                style={{
+                  background: `rgba(124,58,237,${intensity})`,
+                  color: intensity > 0.5 ? "#fff" : "#222",
+                  fontWeight: intensity > 0.5 ? "bold" : "normal"
+                }}
+                title={`${Math.round(ms/60000)} min`}
+              >
+                {ms > 0 ? Math.round(ms/60000) : ""}
+              </td>
+            );
+          })}
+        </tr>
+      ))}
+    </tbody>
+  </table>
+</div>
 
   // VS Code-like top bar
   const EditorTopBar = ({
@@ -3138,7 +3311,7 @@ function App() {
   if (!role && !showLogin && !showRegister) {
     return (
       <div className="welcome-container">
-        <h1>Welcome to Scrum.io!</h1>
+        <h1> Welcome to TaskFlow Application </h1>
         <p className="subtitle">Select Your Role</p>
         <div className="welcome-buttons">
           <button
@@ -3434,6 +3607,14 @@ function App() {
             onClose={() => setShowEmployeeCodeView(false)}
           />
         )}
+
+        <PingModal
+  open={pingModalOpen}
+  title={pingModalConfig.title}
+  fields={pingModalConfig.fields || []}
+  onSubmit={pingModalConfig.onSubmit}
+  onCancel={() => setPingModalOpen(false)}
+/>
 
         {renderDashboardContent()}
       </div>

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import axios from "axios";
 
 function Login() {
@@ -73,6 +73,13 @@ function Login() {
         >
           Login
         </button>
+
+        {/* Forgot Password Link */}
+        <div className="text-center mt-4">
+          <Link to="/forgot-password" className="text-sm text-blue-600 hover:underline">
+            Forgot Password?
+          </Link>
+        </div>
       </form>
     </div>
   );
